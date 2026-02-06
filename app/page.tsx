@@ -584,7 +584,6 @@ function ConfettiBalloonsOverlay({
 export default function Page() {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [openGoalId, setOpenGoalId] = useState<string | null>(null);
-const [user, setUser] = useState<any>(null);
 
   // список: вкладки
   const [filter, setFilter] = useState<"all" | Period>("all");
@@ -594,6 +593,11 @@ const [user, setUser] = useState<any>(null);
   const [newTitle, setNewTitle] = useState("");
   const [newPeriod, setNewPeriod] = useState<Period>("week");
   const [newStartISO, setNewStartISO] = useState(todayISO());
+const [user, setUser] = useState<any>(null);
+const [authEmail, setAuthEmail] = useState("");
+const [authPass, setAuthPass] = useState("");
+const [authMsg, setAuthMsg] = useState("");
+
 
 console.log("ENV URL:", process.env.NEXT_PUBLIC_SUPABASE_URL);
 
@@ -624,6 +628,58 @@ console.log("ENV URL:", process.env.NEXT_PUBLIC_SUPABASE_URL);
       }
     } catch {}
   }, []);
+
+useEffect(() => {
+  let mounted = true;
+
+  supabase.auth.getUser().then(({ data }) => {
+    if (!mounted) return;
+    setUser(data.user ?? null);
+  });
+
+  const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+    setUser(session?.user ?? null);
+  });
+
+  return () => {
+    mounted = false;
+    sub.subscription.unsubscribe();
+  };
+}, []);
+
+async function signIn() {
+  setAuthMsg("");
+  const email = authEmail.trim();
+  if (!email || !authPass) return setAuthMsg("Введите email и пароль.");
+
+  const { error } = await supabase.auth.signInWithPassword({
+    email,
+    password: authPass,
+  });
+
+  if (error) setAuthMsg(error.message);
+}
+
+async function signUp() {
+  setAuthMsg("");
+  const email = authEmail.trim();
+  if (!email || !authPass) return setAuthMsg("Введите email и пароль.");
+
+  const { error } = await supabase.auth.signUp({
+    email,
+    password: authPass,
+  });
+
+  if (error) return setAuthMsg(error.message);
+
+  setAuthMsg("Аккаунт создан ✅ Теперь нажмите «Войти».");
+}
+
+async function signOut() {
+  await supabase.auth.signOut();
+}
+
+
 
   // сохранение целей
   useEffect(() => {
@@ -811,47 +867,115 @@ useEffect(() => {
     fontFamily: ui.fontFamily,
   };
 
+if (!user) {
+  return (
+    <main className="min-h-screen bg-gray-50 text-black">
+      <div className="mx-auto max-w-md px-4 py-12">
+        <h1 className="text-2xl font-bold">Вход</h1>
+        <p className="mt-2 text-sm text-black/60">
+          Введите email и пароль. Если аккаунта нет — нажмите «Регистрация».
+        </p>
+
+        <div className="mt-6 grid gap-3 rounded-3xl bg-white p-6 shadow-sm ring-1 ring-black/5">
+          <input
+            className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-black/10"
+            placeholder="Email"
+            value={authEmail}
+            onChange={(e) => setAuthEmail(e.target.value)}
+          />
+          <input
+            className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-black/10"
+            placeholder="Пароль"
+            type="password"
+            value={authPass}
+            onChange={(e) => setAuthPass(e.target.value)}
+          />
+
+          <div className="flex gap-2">
+            <button
+              className="rounded-2xl bg-black px-4 py-2 text-sm font-semibold text-white"
+              onClick={signIn}
+            >
+              Войти
+            </button>
+            <button
+              className="rounded-2xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-black/80"
+              onClick={signUp}
+            >
+              Регистрация
+            </button>
+          </div>
+
+          {authMsg ? (
+            <div className="rounded-2xl border border-black/10 bg-black/[0.02] px-4 py-3 text-sm text-black/70">
+              {authMsg}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </main>
+  );
+}
+
+
+
   // =========================
   // ЭКРАН 1: СПИСОК ЦЕЛЕЙ
   // =========================
-  if (!openGoal) {
+ 
+if (!user) {
+  return (
+    <main className="min-h-screen p-10">
+      <div className="text-xl font-bold">LOGIN SCREEN CHECK</div>
+      <div className="mt-2 text-sm opacity-70">user is null</div>
+    </main>
+  );
+}
+
+ if (!openGoal) {
     return (
       <main className="min-h-screen" style={pageStyle}>
         <ConfettiBalloonsOverlay active={celebrate} ui={ui} title={celebrateTitle} />
 
         <div className="mx-auto max-w-3xl px-4 py-10">
           <header className="flex items-start justify-between gap-3">
-            <div>
-              <h1 className="text-3xl font-bold tracking-tight">Мои цели</h1>
-              <p className="mt-2 text-sm" style={{ opacity: 0.7 }}>
-                Нажми на цель, чтобы открыть шаги.
-              </p>
-            </div>
+  <div>
+   <h1 className="text-3xl font-bold tracking-tight">Мои цели</h1>
 
-            <div className="flex items-center gap-2">
-              <SoftButton
-                colors={ui}
-                onClick={() => {
-                  setShowDesign((v) => !v);
-                  setShowCreate(false);
-                }}
-              >
-                <span className="inline-flex items-center gap-2">
-                  <IconPalette /> Оформление
-                </span>
-              </SoftButton>
+    <p className="mt-2 text-sm" style={{ opacity: 0.7 }}>
+      Нажми на цель, чтобы открыть шаги.
+    </p>
+  </div>
 
-              <PrimaryButton
-                colors={ui}
-                onClick={() => {
-                  setShowCreate((v) => !v);
-                  setShowDesign(false);
-                }}
-              >
-                {showCreate ? "Закрыть" : "+ Добавить"}
-              </PrimaryButton>
-            </div>
-          </header>
+  <div className="flex items-center gap-2">
+    <SoftButton
+      colors={ui}
+      onClick={() => {
+        setShowDesign((v) => !v);
+        setShowCreate(false);
+      }}
+    >
+      <span className="inline-flex items-center gap-2">
+        <IconPalette /> Оформление
+      </span>
+    </SoftButton>
+
+    <PrimaryButton
+      colors={ui}
+      onClick={() => {
+        setShowCreate((v) => !v);
+        setShowDesign(false);
+      }}
+    >
+      {showCreate ? "Закрыть" : "+ Добавить"}
+    </PrimaryButton>
+
+    <SoftButton colors={ui} onClick={signOut}>
+      Выйти
+    </SoftButton>
+  </div>
+</header>
+
 
           <div className="mt-6 flex flex-wrap gap-2">
             <Tab active={filter === "all"} onClick={() => setFilter("all")} colors={ui}>Все</Tab>
