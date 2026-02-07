@@ -2,30 +2,30 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { supabase } from "../lib/supabaseClient";
+import type { User } from "@supabase/supabase-js";
+
+/* -------------------- TYPES -------------------- */
 
 type Period = "week" | "month" | "year";
-type Step = { id: string; text: string; done: boolean };
+
+type Step = {
+  id: string;
+  text: string;
+  done: boolean;
+  dueISO?: string; // дедлайн шага
+};
+
 type Goal = {
   id: string;
   title: string;
   period: Period;
   startISO: string;
-  endISO: string;
+  endISO: string; // дата окончания задаёт пользователь
   steps: Step[];
   createdAt: number;
 };
 
-type BarStyle =
-  | "pill"
-  | "rect"
-  | "rounded"
-  | "thin"
-  | "thick"
-  | "striped"
-  | "dashed"
-  | "ticks"
-  | "steps"
-  | "diagonal";
+type BarStyle = "pill" | "striped" | "dashed" | "diagonal"; // 4 разных варианта
 
 type UiSettings = {
   bgColor: string;
@@ -39,12 +39,16 @@ type UiSettings = {
   barMid: string;
   barHigh: string;
 
-  fontFamily: string; // CSS font-family
+  fontFamily: string;
   barStyle: BarStyle;
 };
 
-const LS_KEY = "goals_wmy_v1";
-const LS_UI_KEY = "goals_ui_v1";
+/* -------------------- CONST -------------------- */
+
+const LS_KEY = "goalix_goals_v1";
+const LS_UI_KEY = "goalix_ui_v1";
+
+/* -------------------- HELPERS -------------------- */
 
 function uid() {
   return Math.random().toString(36).slice(2, 10) + "-" + Date.now().toString(36);
@@ -87,17 +91,26 @@ function addYears(iso: string, years: number) {
   if (dt.getMonth() !== keepMonth) dt.setDate(0);
   return dateToISO(dt);
 }
-function computeEnd(startISO: string, period: Period) {
-  // конец включительно
+function defaultEndForPeriod(startISO: string, period: Period) {
   if (period === "week") return addDays(startISO, 6);
   if (period === "month") return addDays(addMonths(startISO, 1), -1);
   return addDays(addYears(startISO, 1), -1);
 }
-
 function formatRu(iso: string) {
-  return isoToDate(iso).toLocaleDateString("ru-RU", { year: "numeric", month: "short", day: "numeric" });
+  return isoToDate(iso).toLocaleDateString("ru-RU", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
-
+function clamp(n: number) {
+  return Math.max(0, Math.min(100, n));
+}
+function periodLabel(p: Period) {
+  if (p === "week") return "Неделя";
+  if (p === "month") return "Месяц";
+  return "Год";
+}
 function progressPct(goal: Goal) {
   const total = goal.steps.length;
   if (total === 0) return 0;
@@ -113,17 +126,43 @@ function progressPctFromSteps(steps: Step[]) {
 function perStep(goal: Goal) {
   const total = goal.steps.length;
   if (total === 0) return 0;
-  const v = 100 / total;
-  return Math.round(v * 10) / 10;
+  return Math.round((100 / total) * 10) / 10;
 }
-function clamp(n: number) {
-  return Math.max(0, Math.min(100, n));
+function isOverdue(endISO: string) {
+  return todayISO() > endISO;
 }
-function periodLabel(p: Period) {
-  if (p === "week") return "Неделя";
-  if (p === "month") return "Месяц";
-  return "Год";
-}
+
+/* -------------------- UI DATA -------------------- */
+
+const FONT_PRESETS: { name: string; value: string }[] = [
+  { name: "Roboto", value: 'var(--font-roboto), Helvetica, Arial, sans-serif' },
+  { name: "Open Sans", value: 'var(--font-open-sans), Helvetica, Arial, sans-serif' },
+  { name: "Montserrat", value: 'var(--font-montserrat), Helvetica, Arial, sans-serif' },
+  { name: "Helvetica", value: 'Helvetica, Arial, sans-serif' },
+];
+
+
+const PAINT_PALETTE = [
+  "#000000", "#444444", "#888888", "#CCCCCC", "#FFFFFF",
+  "#FF0000", "#FF7A00", "#FFD400", "#00C853", "#00B0FF",
+  "#2962FF", "#651FFF", "#D500F9", "#FF4081", "#795548",
+  "#1B5E20", "#0D47A1", "#4E342E", "#263238", "#F5F5F5",
+];
+
+const DEFAULT_UI: UiSettings = {
+  bgColor: "#F6F7FB",
+  cardColor: "#FFFFFF",
+  textColor: "#111827",
+  btnColor: "#111827",
+  btnTextColor: "#FFFFFF",
+  barLow: "#F43F5E",
+  barMid: "#F59E0B",
+  barHigh: "#059669",
+  fontFamily: FONT_PRESETS[0].value,
+  barStyle: "pill",
+};
+
+/* -------------------- ICONS -------------------- */
 
 function IconPencil() {
   return (
@@ -155,6 +194,15 @@ function IconPalette() {
     </svg>
   );
 }
+function IconCheck() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+/* -------------------- PRIMITIVES -------------------- */
 
 function IconButton({
   children,
@@ -164,7 +212,7 @@ function IconButton({
 }: {
   children: ReactNode;
   onClick: () => void;
-  title: string;
+  title?: string;
   colors: UiSettings;
 }) {
   return (
@@ -174,7 +222,7 @@ function IconButton({
         onClick();
       }}
       title={title}
-      className="inline-flex h-9 w-9 items-center justify-center rounded-full border shadow-sm active:scale-[0.99]"
+      className="inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border shadow-sm active:scale-[0.99]"
       style={{
         backgroundColor: colors.cardColor,
         color: colors.textColor,
@@ -204,16 +252,14 @@ function PrimaryButton({
       type={type}
       onClick={onClick}
       disabled={disabled}
-      className="rounded-2xl px-4 py-2 text-sm font-semibold shadow-sm active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
-      style={{
-        backgroundColor: colors.btnColor,
-        color: colors.btnTextColor,
-      }}
+      className="cursor-pointer rounded-2xl px-4 py-2 text-sm font-semibold shadow-sm active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
+      style={{ backgroundColor: colors.btnColor, color: colors.btnTextColor }}
     >
       {children}
     </button>
   );
 }
+
 function SoftButton({
   children,
   onClick,
@@ -232,7 +278,7 @@ function SoftButton({
       type={type}
       onClick={onClick}
       disabled={disabled}
-      className="rounded-2xl border px-4 py-2 text-sm font-medium shadow-sm active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
+      className="cursor-pointer rounded-2xl border px-4 py-2 text-sm font-medium shadow-sm active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
       style={{
         backgroundColor: colors.cardColor,
         color: colors.textColor,
@@ -241,43 +287,6 @@ function SoftButton({
     >
       {children}
     </button>
-  );
-}
-
-function Card({
-  title,
-  subtitle,
-  right,
-  children,
-  onClick,
-  colors,
-}: {
-  title: string;
-  subtitle?: string;
-  right?: ReactNode;
-  children: ReactNode;
-  onClick?: () => void;
-  colors: UiSettings;
-}) {
-  return (
-    <section
-      className={`rounded-3xl p-6 shadow-sm ring-1 ${onClick ? "cursor-pointer" : ""}`}
-      onClick={onClick}
-      style={{
-        backgroundColor: colors.cardColor,
-        color: colors.textColor,
-        borderColor: "rgba(0,0,0,0.06)",
-      }}
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold tracking-tight">{title}</h2>
-          {subtitle ? <p className="mt-1 text-sm" style={{ opacity: 0.7 }}>{subtitle}</p> : null}
-        </div>
-        {right ? <div className="flex items-center gap-2">{right}</div> : null}
-      </div>
-      <div className="mt-4">{children}</div>
-    </section>
   );
 }
 
@@ -295,7 +304,7 @@ function Tab({
   return (
     <button
       onClick={onClick}
-      className="rounded-2xl px-4 py-2 text-sm font-semibold shadow-sm ring-1 active:scale-[0.99]"
+      className="cursor-pointer rounded-2xl px-4 py-2 text-sm font-semibold shadow-sm ring-1 active:scale-[0.99]"
       style={{
         backgroundColor: active ? colors.btnColor : colors.cardColor,
         color: active ? colors.btnTextColor : colors.textColor,
@@ -308,7 +317,11 @@ function Tab({
 }
 
 function FieldLabel({ children, colors }: { children: ReactNode; colors: UiSettings }) {
-  return <div className="text-sm font-medium" style={{ color: colors.textColor, opacity: 0.7 }}>{children}</div>;
+  return (
+    <div className="text-sm font-medium" style={{ color: colors.textColor, opacity: 0.7 }}>
+      {children}
+    </div>
+  );
 }
 
 function ColorSwatch({
@@ -324,8 +337,7 @@ function ColorSwatch({
     <button
       type="button"
       onClick={() => onPick(color)}
-      title={color}
-      className={`h-7 w-7 rounded-md border shadow-sm active:scale-[0.98] ${selected ? "ring-2 ring-black/50" : ""}`}
+      className={`cursor-pointer h-7 w-7 rounded-md border shadow-sm active:scale-[0.98] ${selected ? "ring-2 ring-black/40" : ""}`}
       style={{ backgroundColor: color, borderColor: "rgba(0,0,0,0.12)" }}
     />
   );
@@ -341,11 +353,8 @@ function ProgressBar({ pct, ui }: { pct: number; ui: UiSettings }) {
   const v = clamp(pct);
   const fillColor = pickBarColor(v, ui);
 
-  const baseHeight = ui.barStyle === "thin" ? 8 : ui.barStyle === "thick" ? 18 : 12;
-  const radius =
-    ui.barStyle === "rect" ? 4 :
-    ui.barStyle === "rounded" ? 10 :
-    ui.barStyle === "pill" ? 999 : 999;
+  const height = 12;
+  const radius = 999;
 
   let trackBg = "rgba(0,0,0,0.10)";
   let fillBg: string = fillColor;
@@ -357,14 +366,6 @@ function ProgressBar({ pct, ui }: { pct: number; ui: UiSettings }) {
     trackBg = `repeating-linear-gradient(90deg, rgba(0,0,0,0.12), rgba(0,0,0,0.12) 10px, rgba(0,0,0,0.04) 10px, rgba(0,0,0,0.04) 16px)`;
     fillBg = `repeating-linear-gradient(90deg, ${fillColor}, ${fillColor} 10px, rgba(255,255,255,0.25) 10px, rgba(255,255,255,0.25) 16px)`;
   }
-  if (ui.barStyle === "ticks") {
-    trackBg = `repeating-linear-gradient(90deg, rgba(0,0,0,0.10), rgba(0,0,0,0.10) 1px, rgba(0,0,0,0.03) 1px, rgba(0,0,0,0.03) 12px)`;
-    fillBg = `repeating-linear-gradient(90deg, ${fillColor}, ${fillColor} 1px, rgba(255,255,255,0.25) 1px, rgba(255,255,255,0.25) 12px)`;
-  }
-  if (ui.barStyle === "steps") {
-    trackBg = `repeating-linear-gradient(90deg, rgba(0,0,0,0.10), rgba(0,0,0,0.10) 18px, rgba(0,0,0,0.02) 18px, rgba(0,0,0,0.02) 22px)`;
-    fillBg = `repeating-linear-gradient(90deg, ${fillColor}, ${fillColor} 18px, rgba(255,255,255,0.30) 18px, rgba(255,255,255,0.30) 22px)`;
-  }
   if (ui.barStyle === "diagonal") {
     trackBg = `repeating-linear-gradient(135deg, rgba(0,0,0,0.08), rgba(0,0,0,0.08) 10px, rgba(0,0,0,0.02) 10px, rgba(0,0,0,0.02) 20px)`;
     fillBg = `repeating-linear-gradient(135deg, ${fillColor}, ${fillColor} 10px, rgba(255,255,255,0.35) 10px, rgba(255,255,255,0.35) 20px)`;
@@ -372,84 +373,140 @@ function ProgressBar({ pct, ui }: { pct: number; ui: UiSettings }) {
 
   return (
     <div className="w-full">
-      <div
-        className="w-full overflow-hidden"
-        style={{
-          height: baseHeight,
-          borderRadius: radius,
-          background: trackBg,
-        }}
-      >
-        <div
-          className="h-full transition-all"
-          style={{
-            width: `${v}%`,
-            borderRadius: radius,
-            background: fillBg,
-          }}
-        />
+      <div className="w-full overflow-hidden" style={{ height, borderRadius: radius, background: trackBg }}>
+        <div className="h-full transition-all" style={{ width: `${v}%`, borderRadius: radius, background: fillBg }} />
       </div>
     </div>
   );
 }
 
-// 10 “популярных” шрифтов (без внешних загрузок)
-const FONT_PRESETS: { name: string; value: string }[] = [
-  { name: "Inter (системный)", value: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, "Noto Sans", "Liberation Sans", sans-serif' },
-  { name: "Arial", value: "Arial, Helvetica, sans-serif" },
-  { name: "Roboto (если есть)", value: 'Roboto, "Segoe UI", Arial, sans-serif' },
-  { name: "Segoe UI", value: '"Segoe UI", Arial, sans-serif' },
-  { name: "Helvetica", value: 'Helvetica, Arial, sans-serif' },
-  { name: "Georgia", value: "Georgia, serif" },
-  { name: "Times New Roman", value: '"Times New Roman", Times, serif' },
-  { name: "Courier New", value: '"Courier New", Courier, monospace' },
-  { name: "Verdana", value: "Verdana, Geneva, sans-serif" },
-  { name: "Tahoma", value: "Tahoma, Geneva, sans-serif" },
-];
+function Card({
+  title,
+  subtitle,
+  right,
+  children,
+  onClick,
+  colors,
+  tone,
+}: {
+  title: string;
+  subtitle?: string;
+  right?: ReactNode;
+  children: ReactNode;
+  onClick?: () => void;
+  colors: UiSettings;
+  tone?: "normal" | "overdue";
+}) {
+  const overdueBg = "rgba(244,63,94,0.09)";
+  const overdueRing = "rgba(244,63,94,0.22)";
 
-const PAINT_PALETTE = [
-  "#000000", "#444444", "#888888", "#CCCCCC", "#FFFFFF",
-  "#FF0000", "#FF7A00", "#FFD400", "#00C853", "#00B0FF",
-  "#2962FF", "#651FFF", "#D500F9", "#FF4081", "#795548",
-  "#1B5E20", "#0D47A1", "#4E342E", "#263238", "#F5F5F5",
-];
+  return (
+    <section
+      className={`rounded-3xl p-6 shadow-sm ring-1 ${onClick ? "cursor-pointer" : ""}`}
+      onClick={onClick}
+      style={{
+        backgroundColor: tone === "overdue" ? overdueBg : colors.cardColor,
+        color: colors.textColor,
+        borderColor: "rgba(0,0,0,0.06)",
+        boxShadow: tone === "overdue" ? `0 0 0 1px ${overdueRing}` : undefined,
+      }}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold tracking-tight">{title}</h2>
+          {subtitle ? (
+            <p className="mt-1 text-sm" style={{ opacity: 0.7 }}>
+              {subtitle}
+            </p>
+          ) : null}
+        </div>
+        {right ? <div className="flex items-center gap-2">{right}</div> : null}
+      </div>
+      <div className="mt-4">{children}</div>
+    </section>
+  );
+}
 
-const DEFAULT_UI: UiSettings = {
-  bgColor: "#F6F7FB",
-  cardColor: "#FFFFFF",
-  textColor: "#111827",
-  btnColor: "#111827",
-  btnTextColor: "#FFFFFF",
-  barLow: "#F43F5E",
-  barMid: "#F59E0B",
-  barHigh: "#059669",
-  fontFamily: FONT_PRESETS[0].value,
-  barStyle: "pill",
-};
+/* -------------------- MODAL CONFIRM -------------------- */
 
-// --------- 🎉 CONFETTI + BALLOONS OVERLAY ----------
+function ConfirmModal({
+  open,
+  message,
+  onConfirm,
+  onCancel,
+  ui,
+}: {
+  open: boolean;
+  message: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  ui: UiSettings;
+}) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center px-4">
+      <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.35)" }} onClick={onCancel} />
+      <div
+        className="relative w-full max-w-md rounded-3xl p-6 shadow-xl ring-1"
+        style={{ backgroundColor: ui.cardColor, color: ui.textColor, borderColor: "rgba(0,0,0,0.06)" }}
+      >
+        <div className="text-base font-semibold">Подтверждение</div>
+        <div className="mt-2 text-sm" style={{ opacity: 0.75 }}>
+          {message}
+        </div>
+
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <SoftButton colors={ui} onClick={onCancel}>
+            Отмена
+          </SoftButton>
+          <button
+            className="cursor-pointer rounded-2xl px-4 py-2 text-sm font-semibold shadow-sm active:scale-[0.99]"
+            style={{ background: "rgba(244,63,94,1)", color: "#fff" }}
+            onClick={onConfirm}
+          >
+            Удалить
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------- CHECKBOX (rounded, black bg, white check) -------------------- */
+
+function NiceCheckbox({ checked, onChange }: { checked: boolean; onChange: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onChange();
+      }}
+      className="cursor-pointer inline-flex h-6 w-6 items-center justify-center rounded-lg border shadow-sm active:scale-[0.99]"
+      style={{
+        borderColor: "rgba(0,0,0,0.14)",
+        background: checked ? "#111827" : "rgba(0,0,0,0.02)",
+        color: checked ? "#FFFFFF" : "transparent",
+      }}
+      aria-pressed={checked}
+    >
+      {checked ? <IconCheck /> : null}
+    </button>
+  );
+}
+
+/* -------------------- CONFETTI (оставил как было) -------------------- */
+
 type ConfettiPiece = { id: string; left: number; size: number; rot: number; delay: number; dur: number; color: string };
 type BalloonPiece = { id: string; left: number; size: number; delay: number; dur: number; color: string };
 
-function ConfettiBalloonsOverlay({
-  active,
-  ui,
-  title,
-}: {
-  active: boolean;
-  ui: UiSettings;
-  title: string;
-}) {
+function ConfettiBalloonsOverlay({ active, ui, title }: { active: boolean; ui: UiSettings; title: string }) {
   const [confetti, setConfetti] = useState<ConfettiPiece[]>([]);
   const [balloons, setBalloons] = useState<BalloonPiece[]>([]);
 
   useEffect(() => {
     if (!active) return;
-
-    const colors = [
-      ui.barHigh, ui.barMid, ui.barLow,
-      "#00B0FF", "#651FFF", "#FF4081", "#FFD400", "#00C853",
-    ];
+    const colors = [ui.barHigh, ui.barMid, ui.barLow, "#00B0FF", "#651FFF", "#FF4081", "#FFD400", "#00C853"];
 
     const conf: ConfettiPiece[] = Array.from({ length: 110 }).map((_, i) => ({
       id: `${Date.now()}-c-${i}`,
@@ -477,21 +534,19 @@ function ConfettiBalloonsOverlay({
   if (!active) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-[9999] pointer-events-none overflow-hidden"
-      aria-hidden="true"
-    >
-      {/* немного “праздничного” затемнения */}
+    <div className="fixed inset-0 z-[9999] pointer-events-none overflow-hidden" aria-hidden="true">
       <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.06)" }} />
 
-      {/* текст */}
-      <div className="absolute left-1/2 top-10 -translate-x-1/2 rounded-3xl px-5 py-3 shadow-sm"
-           style={{ backgroundColor: ui.cardColor, color: ui.textColor, border: "1px solid rgba(0,0,0,0.08)" }}>
+      <div
+        className="absolute left-1/2 top-10 -translate-x-1/2 rounded-3xl px-5 py-3 shadow-sm"
+        style={{ backgroundColor: ui.cardColor, color: ui.textColor, border: "1px solid rgba(0,0,0,0.08)" }}
+      >
         <div className="text-sm font-semibold">🎉 Цель выполнена на 100%!</div>
-        <div className="text-xs" style={{ opacity: 0.75 }}>{title}</div>
+        <div className="text-xs" style={{ opacity: 0.75 }}>
+          {title}
+        </div>
       </div>
 
-      {/* CSS keyframes */}
       <style>{`
         @keyframes fall {
           0%   { transform: translate3d(0,-20px,0) rotate(0deg); opacity: 0; }
@@ -514,7 +569,6 @@ function ConfettiBalloonsOverlay({
         }
       `}</style>
 
-      {/* confetti */}
       {confetti.map((p) => (
         <div
           key={p.id}
@@ -533,7 +587,6 @@ function ConfettiBalloonsOverlay({
         />
       ))}
 
-      {/* balloons */}
       {balloons.map((b) => (
         <div
           key={b.id}
@@ -549,7 +602,6 @@ function ConfettiBalloonsOverlay({
             filter: "drop-shadow(0 8px 10px rgba(0,0,0,0.10))",
           }}
         >
-          {/* блик */}
           <div
             style={{
               position: "absolute",
@@ -562,7 +614,6 @@ function ConfettiBalloonsOverlay({
               transform: "rotate(-18deg)",
             }}
           />
-          {/* верёвочка */}
           <div
             style={{
               position: "absolute",
@@ -579,46 +630,72 @@ function ConfettiBalloonsOverlay({
     </div>
   );
 }
-// ---------------------------------------------------
+
+/* -------------------- PAGE -------------------- */
 
 export default function Page() {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [openGoalId, setOpenGoalId] = useState<string | null>(null);
-
-  // список: вкладки
   const [filter, setFilter] = useState<"all" | Period>("all");
 
-  // UI: форма создания цели
   const [showCreate, setShowCreate] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newPeriod, setNewPeriod] = useState<Period>("week");
   const [newStartISO, setNewStartISO] = useState(todayISO());
-const [user, setUser] = useState<any>(null);
-const [authEmail, setAuthEmail] = useState("");
-const [authPass, setAuthPass] = useState("");
-const [authMsg, setAuthMsg] = useState("");
+  const [newEndISO, setNewEndISO] = useState(defaultEndForPeriod(todayISO(), "week"));
 
+  const [user, setUser] = useState<User | null | undefined>(undefined);
+  const [authReady, setAuthReady] = useState(false);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPass, setAuthPass] = useState("");
+  const [authMsg, setAuthMsg] = useState("");
 
-console.log("ENV URL:", process.env.NEXT_PUBLIC_SUPABASE_URL);
-
-  // внутри цели: добавление шага
   const [stepDraft, setStepDraft] = useState<Record<string, string>>({});
-
-  // редактирование цели
   const [editingGoal, setEditingGoal] = useState(false);
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
 
-  // 🎨 оформление
   const [ui, setUi] = useState<UiSettings>(DEFAULT_UI);
   const [showDesign, setShowDesign] = useState(false);
 
-  // 🎉 праздник
   const [celebrate, setCelebrate] = useState(false);
   const [celebrateTitle, setCelebrateTitle] = useState("");
   const celebrateTimerRef = useRef<number | null>(null);
-  const celebratedGoalIdsRef = useRef<Set<string>>(new Set()); // чтобы не запускать бесконечно на одной и той же цели
+  const celebratedGoalIdsRef = useRef<Set<string>>(new Set());
 
-  // загрузка целей
+  // confirm modal state
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const confirmActionRef = useRef<null | (() => void)>(null);
+  const [confirmMessage, setConfirmMessage] = useState("");
+
+  function askConfirm(message: string, action: () => void) {
+    setConfirmMessage(message);
+    confirmActionRef.current = action;
+    setConfirmOpen(true);
+  }
+
+  /* ---- CSS patches for color input + consistent pointers ---- */
+  const cssPatch = (
+    <style>{`
+      input[type="color"]{
+        -webkit-appearance: none;
+        appearance: none;
+        padding: 0;
+        border: none;
+        background: transparent;
+        width: 40px;
+        height: 34px;
+        cursor: pointer;
+      }
+      input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+      input[type="color"]::-webkit-color-swatch { border: none; border-radius: 12px; }
+      input[type="color"]::-moz-color-swatch { border: none; border-radius: 12px; }
+
+     
+    `}</style>
+  );
+
+  /* -------------------- LOAD/SAVE -------------------- */
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_KEY);
@@ -629,66 +706,12 @@ console.log("ENV URL:", process.env.NEXT_PUBLIC_SUPABASE_URL);
     } catch {}
   }, []);
 
-useEffect(() => {
-  let mounted = true;
-
-  supabase.auth.getUser().then(({ data }) => {
-    if (!mounted) return;
-    setUser(data.user ?? null);
-  });
-
-  const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-    setUser(session?.user ?? null);
-  });
-
-  return () => {
-    mounted = false;
-    sub.subscription.unsubscribe();
-  };
-}, []);
-
-async function signIn() {
-  setAuthMsg("");
-  const email = authEmail.trim();
-  if (!email || !authPass) return setAuthMsg("Введите email и пароль.");
-
-  const { error } = await supabase.auth.signInWithPassword({
-    email,
-    password: authPass,
-  });
-
-  if (error) setAuthMsg(error.message);
-}
-
-async function signUp() {
-  setAuthMsg("");
-  const email = authEmail.trim();
-  if (!email || !authPass) return setAuthMsg("Введите email и пароль.");
-
-  const { error } = await supabase.auth.signUp({
-    email,
-    password: authPass,
-  });
-
-  if (error) return setAuthMsg(error.message);
-
-  setAuthMsg("Аккаунт создан ✅ Теперь нажмите «Войти».");
-}
-
-async function signOut() {
-  await supabase.auth.signOut();
-}
-
-
-
-  // сохранение целей
   useEffect(() => {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify(goals));
     } catch {}
   }, [goals]);
 
-  // загрузка оформления
   useEffect(() => {
     try {
       const raw = localStorage.getItem(LS_UI_KEY);
@@ -699,20 +722,73 @@ async function signOut() {
     } catch {}
   }, []);
 
-  // сохранение оформления
   useEffect(() => {
     try {
       localStorage.setItem(LS_UI_KEY, JSON.stringify(ui));
     } catch {}
   }, [ui]);
 
-useEffect(() => {
-  supabase.auth.getUser().then(({ data }) => {
-    setUser(data.user ?? null);
-  });
-}, []);
+  /* -------------------- AUTH -------------------- */
 
-  // цели с сортировкой + фильтром
+  useEffect(() => {
+    let alive = true;
+
+    (async () => {
+      const { data, error } = await supabase.auth.getUser();
+      if (!alive) return;
+      if (error) {
+        setUser(null);
+        setAuthReady(true);
+        return;
+      }
+      setUser(data.user ?? null);
+      setAuthReady(true);
+    })();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setAuthReady(true);
+    });
+
+    return () => {
+      alive = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
+
+  async function signIn() {
+    setAuthMsg("");
+    const email = authEmail.trim();
+    if (!email || !authPass) return setAuthMsg("Введите email и пароль.");
+    const { error } = await supabase.auth.signInWithPassword({ email, password: authPass });
+    if (error) setAuthMsg(error.message);
+  }
+
+ async function signUp() {
+  setAuthMsg("");
+  const email = authEmail.trim();
+  if (!email || !authPass) return setAuthMsg("Введите email и пароль.");
+
+  const { error } = await supabase.auth.signUp({
+    email,
+    password: authPass,
+    options: {
+      emailRedirectTo: `${window.location.origin}/confirmed`,
+    },
+  });
+
+  if (error) return setAuthMsg(error.message);
+
+  setAuthMsg("Аккаунт создан ✅ Проверь почту и подтверди e-mail.");
+}
+
+
+  async function signOut() {
+    await supabase.auth.signOut();
+  }
+
+  /* -------------------- COMPUTED -------------------- */
+
   const goalsSortedFiltered = useMemo(() => {
     const arr = filter === "all" ? goals : goals.filter((g) => g.period === filter);
     return [...arr].sort((a, b) => (a.endISO < b.endISO ? -1 : a.endISO > b.endISO ? 1 : b.createdAt - a.createdAt));
@@ -720,16 +796,15 @@ useEffect(() => {
 
   const openGoal = useMemo(() => goals.find((g) => g.id === openGoalId) ?? null, [goals, openGoalId]);
 
+  /* -------------------- CELEBRATION -------------------- */
+
   function startCelebration(goalTitle: string) {
-    // если уже идет — перезапускаем таймер
     if (celebrateTimerRef.current) {
       window.clearTimeout(celebrateTimerRef.current);
       celebrateTimerRef.current = null;
     }
-
     setCelebrateTitle(goalTitle);
     setCelebrate(true);
-
     celebrateTimerRef.current = window.setTimeout(() => {
       setCelebrate(false);
       setCelebrateTitle("");
@@ -738,7 +813,6 @@ useEffect(() => {
   }
 
   useEffect(() => {
-    // cleanup на всякий
     return () => {
       if (celebrateTimerRef.current) {
         window.clearTimeout(celebrateTimerRef.current);
@@ -747,13 +821,18 @@ useEffect(() => {
     };
   }, []);
 
-  // --- действия ---
+  /* -------------------- ACTIONS -------------------- */
+
+  function closeDesignOnAnyNav() {
+    setShowDesign(false);
+  }
+
   function createGoal() {
     const t = newTitle.trim();
     if (!t) return;
 
     const s = newStartISO || todayISO();
-    const e = computeEnd(s, newPeriod);
+    const e = newEndISO || defaultEndForPeriod(s, newPeriod);
 
     const g: Goal = {
       id: uid(),
@@ -769,35 +848,24 @@ useEffect(() => {
 
     setNewTitle("");
     setNewPeriod("week");
-    setNewStartISO(todayISO());
+    const start = todayISO();
+    setNewStartISO(start);
+    setNewEndISO(defaultEndForPeriod(start, "week"));
     setShowCreate(false);
   }
 
-  function updateGoalMain(goalId: string, patch: Partial<Pick<Goal, "title" | "period" | "startISO">>) {
-    setGoals((prev) =>
-      prev.map((g) => {
-        if (g.id !== goalId) return g;
-
-        const next: Goal = { ...g, ...patch } as Goal;
-        const s = patch.startISO ?? g.startISO;
-        const p = (patch.period ?? g.period) as Period;
-
-        next.startISO = s;
-        next.period = p;
-        next.endISO = computeEnd(s, p);
-
-        return next;
-      })
-    );
+  function updateGoalMain(goalId: string, patch: Partial<Pick<Goal, "title" | "period" | "startISO" | "endISO">>) {
+    setGoals((prev) => prev.map((g) => (g.id === goalId ? { ...g, ...patch } : g)));
   }
 
   function deleteGoal(goalId: string) {
-    const ok = confirm("Удалить цель целиком?");
-    if (!ok) return;
-    setGoals((prev) => prev.filter((g) => g.id !== goalId));
-    setOpenGoalId(null);
-    setEditingGoal(false);
-    setEditingStepId(null);
+    askConfirm("Удалить цель целиком? Это действие нельзя отменить.", () => {
+      setGoals((prev) => prev.filter((g) => g.id !== goalId));
+      setOpenGoalId(null);
+      setEditingGoal(false);
+      setEditingStepId(null);
+      setConfirmOpen(false);
+    });
   }
 
   function toggleStep(goalId: string, stepId: string) {
@@ -806,17 +874,13 @@ useEffect(() => {
         if (g.id !== goalId) return g;
 
         const beforePct = progressPct(g);
-
         const nextSteps = g.steps.map((s) => (s.id === stepId ? { ...s, done: !s.done } : s));
         const afterPct = progressPctFromSteps(nextSteps);
 
-        // 🎉 если стало 100% (и раньше не было 100%) — запускаем праздник на 10 секунд
         if (beforePct < 100 && afterPct === 100 && !celebratedGoalIdsRef.current.has(g.id)) {
           celebratedGoalIdsRef.current.add(g.id);
           startCelebration(g.title);
         }
-
-        // если человек снял галочку и прогресс упал — разрешим праздновать снова при следующем достижении 100
         if (afterPct < 100 && celebratedGoalIdsRef.current.has(g.id)) {
           celebratedGoalIdsRef.current.delete(g.id);
         }
@@ -830,25 +894,26 @@ useEffect(() => {
     const text = (stepDraft[goalId] ?? "").trim();
     if (!text) return;
 
-    const step: Step = { id: uid(), text, done: false };
+    const step: Step = { id: uid(), text, done: false, dueISO: "" };
     setGoals((prev) => prev.map((g) => (g.id === goalId ? { ...g, steps: [...g.steps, step] } : g)));
     setStepDraft((prev) => ({ ...prev, [goalId]: "" }));
   }
 
-  function updateStepText(goalId: string, stepId: string, text: string) {
+  function updateStep(goalId: string, stepId: string, patch: Partial<Pick<Step, "text" | "dueISO">>) {
     setGoals((prev) =>
       prev.map((g) => {
         if (g.id !== goalId) return g;
-        return { ...g, steps: g.steps.map((s) => (s.id === stepId ? { ...s, text } : s)) };
+        return { ...g, steps: g.steps.map((s) => (s.id === stepId ? { ...s, ...patch } : s)) };
       })
     );
   }
 
   function deleteStep(goalId: string, stepId: string) {
-    const ok = confirm("Удалить этот шаг?");
-    if (!ok) return;
-    setGoals((prev) => prev.map((g) => (g.id === goalId ? { ...g, steps: g.steps.filter((s) => s.id !== stepId) } : g)));
-    if (editingStepId === stepId) setEditingStepId(null);
+    askConfirm("Удалить шаг? Это действие нельзя отменить.", () => {
+      setGoals((prev) => prev.map((g) => (g.id === goalId ? { ...g, steps: g.steps.filter((s) => s.id !== stepId) } : g)));
+      if (editingStepId === stepId) setEditingStepId(null);
+      setConfirmOpen(false);
+    });
   }
 
   function onBackToList() {
@@ -867,146 +932,162 @@ useEffect(() => {
     fontFamily: ui.fontFamily,
   };
 
-if (!user) {
-  return (
-    <main className="min-h-screen bg-gray-50 text-black">
-      <div className="mx-auto max-w-md px-4 py-12">
-        <h1 className="text-2xl font-bold">Вход</h1>
-        <p className="mt-2 text-sm text-black/60">
-          Введите email и пароль. Если аккаунта нет — нажмите «Регистрация».
-        </p>
+  /* -------------------- RENDER: AUTH LOADING -------------------- */
 
-        <div className="mt-6 grid gap-3 rounded-3xl bg-white p-6 shadow-sm ring-1 ring-black/5">
-          <input
-            className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-black/10"
-            placeholder="Email"
-            value={authEmail}
-            onChange={(e) => setAuthEmail(e.target.value)}
-          />
-          <input
-            className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-black/10"
-            placeholder="Пароль"
-            type="password"
-            value={authPass}
-            onChange={(e) => setAuthPass(e.target.value)}
-          />
-
-          <div className="flex gap-2">
-            <button
-              className="rounded-2xl bg-black px-4 py-2 text-sm font-semibold text-white"
-              onClick={signIn}
-            >
-              Войти
-            </button>
-            <button
-              className="rounded-2xl border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-black/80"
-              onClick={signUp}
-            >
-              Регистрация
-            </button>
-          </div>
-
-          {authMsg ? (
-            <div className="rounded-2xl border border-black/10 bg-black/[0.02] px-4 py-3 text-sm text-black/70">
-              {authMsg}
-            </div>
-          ) : null}
-        </div>
-      </div>
-    </main>
-  );
-}
-
-
-
-  // =========================
-  // ЭКРАН 1: СПИСОК ЦЕЛЕЙ
-  // =========================
- 
-if (!user) {
-  return (
-    <main className="min-h-screen p-10">
-      <div className="text-xl font-bold">LOGIN SCREEN CHECK</div>
-      <div className="mt-2 text-sm opacity-70">user is null</div>
-    </main>
-  );
-}
-
- if (!openGoal) {
+  if (!authReady) {
     return (
       <main className="min-h-screen" style={pageStyle}>
+        {cssPatch}
+        <div className="mx-auto max-w-md px-4 py-16">
+          <div className="rounded-3xl p-6 shadow-sm ring-1" style={{ backgroundColor: ui.cardColor, borderColor: "rgba(0,0,0,0.06)" }}>
+            <div className="text-sm font-semibold">Goalix</div>
+            <div className="mt-2 text-sm" style={{ opacity: 0.7 }}>
+              Проверяем сессию…
+            </div>
+            <div className="mt-4 h-2 w-full rounded-full" style={{ background: "rgba(0,0,0,0.08)" }} />
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  /* -------------------- RENDER: LOGIN -------------------- */
+
+  if (!user) {
+    return (
+      <main className="min-h-screen" style={pageStyle}>
+        {cssPatch}
+        <div className="mx-auto max-w-md px-4 py-12">
+          <h1 className="text-2xl font-bold">Вход</h1>
+          <p className="mt-2 text-sm" style={{ opacity: 0.7 }}>
+            Введите email и пароль. Если аккаунта нет — нажмите «Регистрация».
+          </p>
+
+          <div className="mt-6 grid gap-3 rounded-3xl p-6 shadow-sm ring-1" style={{ backgroundColor: ui.cardColor, borderColor: "rgba(0,0,0,0.06)" }}>
+            <input
+              className="w-full rounded-2xl border px-4 py-3 text-sm outline-none"
+              style={{ backgroundColor: ui.cardColor, color: ui.textColor, borderColor: "rgba(0,0,0,0.12)" }}
+              placeholder="Email"
+              value={authEmail}
+              onChange={(e) => setAuthEmail(e.target.value)}
+            />
+            <input
+              className="w-full rounded-2xl border px-4 py-3 text-sm outline-none"
+              style={{ backgroundColor: ui.cardColor, color: ui.textColor, borderColor: "rgba(0,0,0,0.12)" }}
+              placeholder="Пароль"
+              type="password"
+              value={authPass}
+              onChange={(e) => setAuthPass(e.target.value)}
+            />
+
+            <div className="flex gap-2">
+              <PrimaryButton colors={ui} onClick={signIn}>
+                Войти
+              </PrimaryButton>
+              <SoftButton colors={ui} onClick={signUp}>
+                Регистрация
+              </SoftButton>
+            </div>
+
+            {authMsg ? (
+              <div className="rounded-2xl border px-4 py-3 text-sm" style={{ borderColor: "rgba(0,0,0,0.12)", background: "rgba(0,0,0,0.02)" }}>
+                {authMsg}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  /* -------------------- RENDER: GOALS LIST -------------------- */
+
+  if (!openGoal) {
+    return (
+      <main className="min-h-screen" style={pageStyle}>
+        {cssPatch}
+
+        <ConfirmModal
+          open={confirmOpen}
+          message={confirmMessage}
+          ui={ui}
+          onCancel={() => setConfirmOpen(false)}
+          onConfirm={() => confirmActionRef.current?.()}
+        />
+
         <ConfettiBalloonsOverlay active={celebrate} ui={ui} title={celebrateTitle} />
 
         <div className="mx-auto max-w-3xl px-4 py-10">
           <header className="flex items-start justify-between gap-3">
-  <div>
-   <h1 className="text-3xl font-bold tracking-tight">Мои цели</h1>
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight">Мои цели</h1>
+              <p className="mt-2 text-sm" style={{ opacity: 0.7 }}>
+                Нажми на цель, чтобы открыть шаги.
+              </p>
+            </div>
 
-    <p className="mt-2 text-sm" style={{ opacity: 0.7 }}>
-      Нажми на цель, чтобы открыть шаги.
-    </p>
-  </div>
+            <div className="flex items-center gap-2">
+              <SoftButton
+                colors={ui}
+                onClick={() => {
+                  setShowDesign((v) => !v);
+                  setShowCreate(false);
+                }}
+              >
+                <span className="inline-flex items-center gap-2">
+                  <IconPalette /> Оформление
+                </span>
+              </SoftButton>
 
-  <div className="flex items-center gap-2">
-    <SoftButton
-      colors={ui}
-      onClick={() => {
-        setShowDesign((v) => !v);
-        setShowCreate(false);
-      }}
-    >
-      <span className="inline-flex items-center gap-2">
-        <IconPalette /> Оформление
-      </span>
-    </SoftButton>
+              <PrimaryButton
+                colors={ui}
+                onClick={() => {
+                  setShowCreate((v) => !v);
+                  setShowDesign(false);
+                }}
+              >
+                {showCreate ? "Закрыть" : "+ Добавить"}
+              </PrimaryButton>
 
-    <PrimaryButton
-      colors={ui}
-      onClick={() => {
-        setShowCreate((v) => !v);
-        setShowDesign(false);
-      }}
-    >
-      {showCreate ? "Закрыть" : "+ Добавить"}
-    </PrimaryButton>
-
-    <SoftButton colors={ui} onClick={signOut}>
-      Выйти
-    </SoftButton>
-  </div>
-</header>
-
+              <SoftButton colors={ui} onClick={signOut}>
+                Выйти
+              </SoftButton>
+            </div>
+          </header>
 
           <div className="mt-6 flex flex-wrap gap-2">
-            <Tab active={filter === "all"} onClick={() => setFilter("all")} colors={ui}>Все</Tab>
-            <Tab active={filter === "week"} onClick={() => setFilter("week")} colors={ui}>Неделя</Tab>
-            <Tab active={filter === "month"} onClick={() => setFilter("month")} colors={ui}>Месяц</Tab>
-            <Tab active={filter === "year"} onClick={() => setFilter("year")} colors={ui}>Год</Tab>
+            <Tab active={filter === "all"} onClick={() => { setFilter("all"); closeDesignOnAnyNav(); }} colors={ui}>Все</Tab>
+            <Tab active={filter === "week"} onClick={() => { setFilter("week"); closeDesignOnAnyNav(); }} colors={ui}>Неделя</Tab>
+            <Tab active={filter === "month"} onClick={() => { setFilter("month"); closeDesignOnAnyNav(); }} colors={ui}>Месяц</Tab>
+            <Tab active={filter === "year"} onClick={() => { setFilter("year"); closeDesignOnAnyNav(); }} colors={ui}>Год</Tab>
           </div>
 
-          {/* 🎨 Панель оформления */}
+          {/* ОФОРМЛЕНИЕ */}
           {showDesign ? (
             <div className="mt-6">
               <Card
                 colors={ui}
                 title="🎨 Оформление"
-                subtitle="Выбирай цвета, шрифт и вид шкалы. Всё сохраняется автоматически."
-                right={
-                  <SoftButton colors={ui} onClick={resetUi}>
-                    Сбросить
-                  </SoftButton>
-                }
+                subtitle="Настраивай цвета, шрифты и стиль шкалы."
+                right={<SoftButton colors={ui} onClick={resetUi}>Сбросить</SoftButton>}
               >
                 <div className="grid gap-6 sm:grid-cols-2">
                   <div>
                     <FieldLabel colors={ui}>Цвет фона</FieldLabel>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {PAINT_PALETTE.map((c) => (
-                        <ColorSwatch key={c} color={c} selected={ui.bgColor.toLowerCase() === c.toLowerCase()} onPick={(hex) => setUi((p) => ({ ...p, bgColor: hex }))} />
+                        <ColorSwatch
+                          key={c}
+                          color={c}
+                          selected={ui.bgColor.toLowerCase() === c.toLowerCase()}
+                          onPick={(hex) => setUi((p) => ({ ...p, bgColor: hex }))}
+                        />
                       ))}
-                      <label className="ml-2 inline-flex items-center gap-2 text-sm" style={{ opacity: 0.8 }}>
+                      <label className="ml-2 inline-flex cursor-pointer items-center gap-2 text-sm" style={{ opacity: 0.8 }}>
                         <span>Другой:</span>
-                        <input type="color" value={ui.bgColor} onChange={(e) => setUi((p) => ({ ...p, bgColor: e.target.value }))} />
+                        <span className="inline-flex items-center justify-center rounded-xl border px-2 py-1" style={{ borderColor: "rgba(0,0,0,0.12)" }}>
+                          <input type="color" value={ui.bgColor} onChange={(e) => setUi((p) => ({ ...p, bgColor: e.target.value }))} />
+                        </span>
                       </label>
                     </div>
                   </div>
@@ -1015,11 +1096,18 @@ if (!user) {
                     <FieldLabel colors={ui}>Цвет карточек</FieldLabel>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {PAINT_PALETTE.map((c) => (
-                        <ColorSwatch key={c} color={c} selected={ui.cardColor.toLowerCase() === c.toLowerCase()} onPick={(hex) => setUi((p) => ({ ...p, cardColor: hex }))} />
+                        <ColorSwatch
+                          key={c}
+                          color={c}
+                          selected={ui.cardColor.toLowerCase() === c.toLowerCase()}
+                          onPick={(hex) => setUi((p) => ({ ...p, cardColor: hex }))}
+                        />
                       ))}
-                      <label className="ml-2 inline-flex items-center gap-2 text-sm" style={{ opacity: 0.8 }}>
+                      <label className="ml-2 inline-flex cursor-pointer items-center gap-2 text-sm" style={{ opacity: 0.8 }}>
                         <span>Другой:</span>
-                        <input type="color" value={ui.cardColor} onChange={(e) => setUi((p) => ({ ...p, cardColor: e.target.value }))} />
+                        <span className="inline-flex items-center justify-center rounded-xl border px-2 py-1" style={{ borderColor: "rgba(0,0,0,0.12)" }}>
+                          <input type="color" value={ui.cardColor} onChange={(e) => setUi((p) => ({ ...p, cardColor: e.target.value }))} />
+                        </span>
                       </label>
                     </div>
                   </div>
@@ -1028,37 +1116,52 @@ if (!user) {
                     <FieldLabel colors={ui}>Цвет кнопок</FieldLabel>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {PAINT_PALETTE.map((c) => (
-                        <ColorSwatch key={c} color={c} selected={ui.btnColor.toLowerCase() === c.toLowerCase()} onPick={(hex) => setUi((p) => ({ ...p, btnColor: hex }))} />
+                        <ColorSwatch
+                          key={c}
+                          color={c}
+                          selected={ui.btnColor.toLowerCase() === c.toLowerCase()}
+                          onPick={(hex) => setUi((p) => ({ ...p, btnColor: hex }))}
+                        />
                       ))}
-                      <label className="ml-2 inline-flex items-center gap-2 text-sm" style={{ opacity: 0.8 }}>
+                      <label className="ml-2 inline-flex cursor-pointer items-center gap-2 text-sm" style={{ opacity: 0.8 }}>
                         <span>Другой:</span>
-                        <input type="color" value={ui.btnColor} onChange={(e) => setUi((p) => ({ ...p, btnColor: e.target.value }))} />
+                        <span className="inline-flex items-center justify-center rounded-xl border px-2 py-1" style={{ borderColor: "rgba(0,0,0,0.12)" }}>
+                          <input type="color" value={ui.btnColor} onChange={(e) => setUi((p) => ({ ...p, btnColor: e.target.value }))} />
+                        </span>
                       </label>
                     </div>
 
                     <div className="mt-3">
                       <FieldLabel colors={ui}>Цвет текста на кнопках</FieldLabel>
                       <div className="mt-2 flex items-center gap-3">
-                        <input type="color" value={ui.btnTextColor} onChange={(e) => setUi((p) => ({ ...p, btnTextColor: e.target.value }))} />
+                        <span className="inline-flex items-center justify-center rounded-xl border px-2 py-1 cursor-pointer" style={{ borderColor: "rgba(0,0,0,0.12)" }}>
+                          <input type="color" value={ui.btnTextColor} onChange={(e) => setUi((p) => ({ ...p, btnTextColor: e.target.value }))} />
+                        </span>
                         <span className="text-sm" style={{ opacity: 0.7 }}>Например белый/чёрный</span>
                       </div>
                     </div>
                   </div>
 
                   <div>
-                    <FieldLabel colors={ui}>Цвета шкалы (низкий/средний/высокий)</FieldLabel>
+                    <FieldLabel colors={ui}>Цвета шкалы</FieldLabel>
                     <div className="mt-3 space-y-3">
                       <div className="flex items-center justify-between gap-3">
                         <span className="text-sm" style={{ opacity: 0.7 }}>Низкий</span>
-                        <input type="color" value={ui.barLow} onChange={(e) => setUi((p) => ({ ...p, barLow: e.target.value }))} />
+                        <span className="inline-flex items-center justify-center rounded-xl border px-2 py-1 cursor-pointer" style={{ borderColor: "rgba(0,0,0,0.12)" }}>
+                          <input type="color" value={ui.barLow} onChange={(e) => setUi((p) => ({ ...p, barLow: e.target.value }))} />
+                        </span>
                       </div>
                       <div className="flex items-center justify-between gap-3">
                         <span className="text-sm" style={{ opacity: 0.7 }}>Средний</span>
-                        <input type="color" value={ui.barMid} onChange={(e) => setUi((p) => ({ ...p, barMid: e.target.value }))} />
+                        <span className="inline-flex items-center justify-center rounded-xl border px-2 py-1 cursor-pointer" style={{ borderColor: "rgba(0,0,0,0.12)" }}>
+                          <input type="color" value={ui.barMid} onChange={(e) => setUi((p) => ({ ...p, barMid: e.target.value }))} />
+                        </span>
                       </div>
                       <div className="flex items-center justify-between gap-3">
                         <span className="text-sm" style={{ opacity: 0.7 }}>Высокий</span>
-                        <input type="color" value={ui.barHigh} onChange={(e) => setUi((p) => ({ ...p, barHigh: e.target.value }))} />
+                        <span className="inline-flex items-center justify-center rounded-xl border px-2 py-1 cursor-pointer" style={{ borderColor: "rgba(0,0,0,0.12)" }}>
+                          <input type="color" value={ui.barHigh} onChange={(e) => setUi((p) => ({ ...p, barHigh: e.target.value }))} />
+                        </span>
                       </div>
 
                       <div className="mt-2 rounded-2xl border p-3" style={{ borderColor: "rgba(0,0,0,0.12)" }}>
@@ -1073,9 +1176,9 @@ if (!user) {
                   </div>
 
                   <div>
-                    <FieldLabel colors={ui}>Шрифт (10 вариантов)</FieldLabel>
+                    <FieldLabel colors={ui}>Шрифты</FieldLabel>
                     <select
-                      className="mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none"
+                      className="mt-2 w-full cursor-pointer rounded-2xl border px-4 py-3 text-sm outline-none"
                       style={{ backgroundColor: ui.cardColor, color: ui.textColor, borderColor: "rgba(0,0,0,0.12)" }}
                       value={ui.fontFamily}
                       onChange={(e) => setUi((p) => ({ ...p, fontFamily: e.target.value }))}
@@ -1086,33 +1189,24 @@ if (!user) {
                         </option>
                       ))}
                     </select>
-                    <div className="mt-2 text-xs" style={{ opacity: 0.7 }}>
-                      *Шрифт берётся из системы. Если какого-то нет — будет подстановка похожего.
-                    </div>
                   </div>
 
                   <div>
-                    <FieldLabel colors={ui}>Форма/стиль шкалы (10 вариантов)</FieldLabel>
+                    <FieldLabel colors={ui}>Стиль шкалы</FieldLabel>
                     <select
-                      className="mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none"
+                      className="mt-2 w-full cursor-pointer rounded-2xl border px-4 py-3 text-sm outline-none"
                       style={{ backgroundColor: ui.cardColor, color: ui.textColor, borderColor: "rgba(0,0,0,0.12)" }}
                       value={ui.barStyle}
                       onChange={(e) => setUi((p) => ({ ...p, barStyle: e.target.value as BarStyle }))}
                     >
-                      <option value="pill">Овальная (как сейчас)</option>
-                      <option value="rect">Прямоугольная</option>
-                      <option value="rounded">Скруглённая</option>
-                      <option value="thin">Тонкая</option>
-                      <option value="thick">Толстая</option>
+                      <option value="pill">Овальная</option>
                       <option value="striped">Полосатая</option>
                       <option value="dashed">Пунктир</option>
-                      <option value="ticks">Штрихи</option>
-                      <option value="steps">Ступеньки</option>
-                      <option value="diagonal">Диагональный орнамент</option>
+                      <option value="diagonal">Диагональ</option>
                     </select>
 
                     <div className="mt-3 rounded-2xl border p-3" style={{ borderColor: "rgba(0,0,0,0.12)" }}>
-                      <div className="text-xs mb-2" style={{ opacity: 0.7 }}>Пример выбранного вида:</div>
+                      <div className="text-xs mb-2" style={{ opacity: 0.7 }}>Пример:</div>
                       <ProgressBar pct={72} ui={ui} />
                     </div>
                   </div>
@@ -1121,6 +1215,7 @@ if (!user) {
             </div>
           ) : null}
 
+          {/* СОЗДАНИЕ ЦЕЛИ */}
           {showCreate ? (
             <div className="mt-6">
               <Card colors={ui} title="Новая цель" subtitle="Заполни и нажми “Создать”">
@@ -1140,10 +1235,16 @@ if (!user) {
                   <div>
                     <FieldLabel colors={ui}>Период</FieldLabel>
                     <select
-                      className="mt-1 w-full rounded-2xl border px-4 py-3 text-sm outline-none"
+                      className="mt-1 w-full cursor-pointer rounded-2xl border px-4 py-3 text-sm outline-none"
                       style={{ backgroundColor: ui.cardColor, color: ui.textColor, borderColor: "rgba(0,0,0,0.12)" }}
                       value={newPeriod}
-                      onChange={(e) => setNewPeriod(e.target.value as Period)}
+                      onChange={(e) => {
+                        const p = e.target.value as Period;
+                        setNewPeriod(p);
+                        setShowDesign(false);
+                        // end по умолчанию, но пользователь может поменять
+                        setNewEndISO(defaultEndForPeriod(newStartISO, p));
+                      }}
                     >
                       <option value="week">Неделя</option>
                       <option value="month">Месяц</option>
@@ -1151,24 +1252,26 @@ if (!user) {
                     </select>
                   </div>
 
-                  <div className="sm:col-span-2">
+                  <div className="sm:col-span-1">
                     <FieldLabel colors={ui}>Дата начала</FieldLabel>
                     <input
                       type="date"
-                      className="mt-1 w-full rounded-2xl border px-4 py-3 text-sm outline-none"
+                      className="mt-1 w-full cursor-pointer rounded-2xl border px-4 py-3 text-sm outline-none"
                       style={{ backgroundColor: ui.cardColor, color: ui.textColor, borderColor: "rgba(0,0,0,0.12)" }}
                       value={newStartISO}
                       onChange={(e) => setNewStartISO(e.target.value)}
                     />
                   </div>
 
-                  <div>
-                    <FieldLabel colors={ui}>Дата конца (авто)</FieldLabel>
-                    <div className="mt-1 rounded-2xl border px-4 py-3 text-sm"
-                      style={{ backgroundColor: "rgba(0,0,0,0.03)", borderColor: "rgba(0,0,0,0.12)" }}
-                    >
-                      {formatRu(computeEnd(newStartISO, newPeriod))}
-                    </div>
+                  <div className="sm:col-span-2">
+                    <FieldLabel colors={ui}>Дата окончания</FieldLabel>
+                    <input
+                      type="date"
+                      className="mt-1 w-full cursor-pointer rounded-2xl border px-4 py-3 text-sm outline-none"
+                      style={{ backgroundColor: ui.cardColor, color: ui.textColor, borderColor: "rgba(0,0,0,0.12)" }}
+                      value={newEndISO}
+                      onChange={(e) => setNewEndISO(e.target.value)}
+                    />
                   </div>
                 </div>
 
@@ -1184,34 +1287,57 @@ if (!user) {
             </div>
           ) : null}
 
+          {/* СПИСОК ЦЕЛЕЙ */}
           <div className="mt-6 grid gap-5">
             {goalsSortedFiltered.length === 0 ? (
               <Card colors={ui} title="Пока нет целей" subtitle="Нажми “+ Добавить”, чтобы создать первую.">
-                <div className="text-sm" style={{ opacity: 0.7 }}>Оформление можно менять через кнопку “Оформление”.</div>
+                <div className="text-sm" style={{ opacity: 0.7 }}>
+                  Оформление можно менять через кнопку “Оформление”.
+                </div>
               </Card>
             ) : null}
 
             {goalsSortedFiltered.map((g) => {
               const pct = progressPct(g);
+              const overdue = isOverdue(g.endISO) && pct < 100;
 
               return (
                 <Card
                   key={g.id}
                   colors={ui}
+                  tone={overdue ? "overdue" : "normal"}
                   title={g.title}
-                  subtitle={`${periodLabel(g.period)} · ${formatRu(g.startISO)} — ${formatRu(g.endISO)}`}
-                  onClick={() => setOpenGoalId(g.id)}
+                  subtitle={`${periodLabel(g.period)} · ${formatRu(g.startISO)} — ${formatRu(g.endISO)}${overdue ? " · Просрочено" : ""}`}
+                  onClick={() => {
+                    setOpenGoalId(g.id);
+                    setShowDesign(false);
+                    setShowCreate(false);
+                  }}
+                  right={
+                    <>
+                      <IconButton
+                        colors={ui}
+                        title="Редактировать"
+                        onClick={() => {
+                          setOpenGoalId(g.id);
+                          setEditingGoal(true);
+                          setEditingStepId(null);
+                          setShowDesign(false);
+                          setShowCreate(false);
+                        }}
+                      >
+                        <IconPencil />
+                      </IconButton>
+                      <IconButton colors={ui} title="Удалить" onClick={() => deleteGoal(g.id)}>
+                        <IconTrash />
+                      </IconButton>
+                    </>
+                  }
                 >
-                  <div className="rounded-2xl border p-4"
-                    style={{ backgroundColor: ui.cardColor, borderColor: "rgba(0,0,0,0.12)" }}
-                  >
+                  <div className="rounded-2xl border p-4" style={{ backgroundColor: ui.cardColor, borderColor: "rgba(0,0,0,0.12)" }}>
                     <div className="flex items-center justify-between gap-2">
-                      <div className="text-sm font-semibold" style={{ opacity: 0.85 }}>
-                        Прогресс: {pct}%
-                      </div>
-                      <div className="text-xs" style={{ opacity: 0.6 }}>
-                        {g.steps.length ? `Шагов: ${g.steps.length}` : "Шагов пока нет"}
-                      </div>
+                      <div className="text-sm font-semibold" style={{ opacity: 0.85 }}>Прогресс: {pct}%</div>
+                      <div className="text-xs" style={{ opacity: 0.6 }}>{g.steps.length ? `Шагов: ${g.steps.length}` : "Шагов пока нет"}</div>
                     </div>
                     <div className="mt-3">
                       <ProgressBar pct={pct} ui={ui} />
@@ -1230,14 +1356,24 @@ if (!user) {
     );
   }
 
-  // =========================
-  // ЭКРАН 2: ВНУТРИ ЦЕЛИ
-  // =========================
+  /* -------------------- RENDER: INSIDE GOAL -------------------- */
+
   const pct = progressPct(openGoal);
   const stepPct = perStep(openGoal);
+  const overdueGoal = isOverdue(openGoal.endISO) && pct < 100;
 
   return (
     <main className="min-h-screen" style={pageStyle}>
+      {cssPatch}
+
+      <ConfirmModal
+        open={confirmOpen}
+        message={confirmMessage}
+        ui={ui}
+        onCancel={() => setConfirmOpen(false)}
+        onConfirm={() => confirmActionRef.current?.()}
+      />
+
       <ConfettiBalloonsOverlay active={celebrate} ui={ui} title={celebrateTitle} />
 
       <div className="mx-auto max-w-3xl px-4 py-10">
@@ -1249,7 +1385,7 @@ if (!user) {
           <div className="flex items-center gap-2">
             <IconButton
               colors={ui}
-              title={editingGoal ? "Закрыть редактирование цели" : "Редактировать цель"}
+              title={editingGoal ? "Закрыть редактирование" : "Редактировать цель"}
               onClick={() => {
                 setEditingGoal((v) => !v);
                 setEditingStepId(null);
@@ -1267,13 +1403,18 @@ if (!user) {
         <div className="mt-6 grid gap-5">
           <Card
             colors={ui}
+            tone={overdueGoal ? "overdue" : "normal"}
             title={openGoal.title}
-            subtitle={`${periodLabel(openGoal.period)} · ${formatRu(openGoal.startISO)} — ${formatRu(openGoal.endISO)}`}
+            subtitle={`${periodLabel(openGoal.period)} · ${formatRu(openGoal.startISO)} — ${formatRu(openGoal.endISO)}${overdueGoal ? " · Просрочено" : ""}`}
           >
             <div className="rounded-2xl border p-4" style={{ borderColor: "rgba(0,0,0,0.12)" }}>
               <div className="flex items-center justify-between gap-2">
-                <div className="text-sm font-semibold" style={{ opacity: 0.85 }}>Прогресс: {pct}%</div>
-                <div className="text-xs" style={{ opacity: 0.6 }}>{openGoal.steps.length ? `≈ ${stepPct}% за шаг` : "Добавь шаги"}</div>
+                <div className="text-sm font-semibold" style={{ opacity: 0.85 }}>
+                  Прогресс: {pct}%
+                </div>
+                <div className="text-xs" style={{ opacity: 0.6 }}>
+                  {openGoal.steps.length ? `≈ ${stepPct}% за шаг` : "Добавь шаги"}
+                </div>
               </div>
               <div className="mt-3">
                 <ProgressBar pct={pct} ui={ui} />
@@ -1295,7 +1436,7 @@ if (!user) {
                 <div>
                   <FieldLabel colors={ui}>Период</FieldLabel>
                   <select
-                    className="mt-1 w-full rounded-2xl border px-4 py-3 text-sm outline-none"
+                    className="mt-1 w-full cursor-pointer rounded-2xl border px-4 py-3 text-sm outline-none"
                     style={{ backgroundColor: ui.cardColor, color: ui.textColor, borderColor: "rgba(0,0,0,0.12)" }}
                     value={openGoal.period}
                     onChange={(e) => updateGoalMain(openGoal.id, { period: e.target.value as Period })}
@@ -1306,22 +1447,26 @@ if (!user) {
                   </select>
                 </div>
 
-                <div className="sm:col-span-2">
+                <div className="sm:col-span-1">
                   <FieldLabel colors={ui}>Дата начала</FieldLabel>
                   <input
                     type="date"
-                    className="mt-1 w-full rounded-2xl border px-4 py-3 text-sm outline-none"
+                    className="mt-1 w-full cursor-pointer rounded-2xl border px-4 py-3 text-sm outline-none"
                     style={{ backgroundColor: ui.cardColor, color: ui.textColor, borderColor: "rgba(0,0,0,0.12)" }}
                     value={openGoal.startISO}
                     onChange={(e) => updateGoalMain(openGoal.id, { startISO: e.target.value })}
                   />
                 </div>
 
-                <div>
-                  <FieldLabel colors={ui}>Дата конца (авто)</FieldLabel>
-                  <div className="mt-1 rounded-2xl border px-4 py-3 text-sm" style={{ backgroundColor: "rgba(0,0,0,0.03)", borderColor: "rgba(0,0,0,0.12)" }}>
-                    {formatRu(openGoal.endISO)}
-                  </div>
+                <div className="sm:col-span-2">
+                  <FieldLabel colors={ui}>Дата окончания</FieldLabel>
+                  <input
+                    type="date"
+                    className="mt-1 w-full cursor-pointer rounded-2xl border px-4 py-3 text-sm outline-none"
+                    style={{ backgroundColor: ui.cardColor, color: ui.textColor, borderColor: "rgba(0,0,0,0.12)" }}
+                    value={openGoal.endISO}
+                    onChange={(e) => updateGoalMain(openGoal.id, { endISO: e.target.value })}
+                  />
                 </div>
               </div>
             ) : null}
@@ -1343,31 +1488,43 @@ if (!user) {
             </div>
 
             {openGoal.steps.length === 0 ? (
-              <div className="mt-4 text-sm" style={{ opacity: 0.7 }}>Шагов пока нет. Добавь первый шаг сверху.</div>
+              <div className="mt-4 text-sm" style={{ opacity: 0.7 }}>
+                Шагов пока нет. Добавь первый шаг сверху.
+              </div>
             ) : (
               <div className="mt-4 grid gap-2">
-                {openGoal.steps.map((s, idx) => {
+                {openGoal.steps.map((s) => {
                   const isEditing = editingStepId === s.id;
 
                   return (
-                    <div key={s.id} className="rounded-2xl border px-4 py-3" style={{ borderColor: "rgba(0,0,0,0.12)" }}>
+                 <div
+  key={s.id}
+  className="rounded-2xl border px-4 py-3"
+  style={{ borderColor: "rgba(0,0,0,0.12)" }}
+>
+
                       <div className="flex flex-wrap items-center justify-between gap-3">
-                        <label className="flex cursor-pointer items-center gap-3">
-                          <input
-                            type="checkbox"
-                            className="h-5 w-5"
-                            checked={s.done}
-                            onChange={() => toggleStep(openGoal.id, s.id)}
-                          />
-                          <span className="text-xs" style={{ opacity: 0.6 }}>#{idx + 1}</span>
-                        </label>
+                        <div className="flex items-center gap-3">
+                          <NiceCheckbox checked={s.done} onChange={() => toggleStep(openGoal.id, s.id)} />
+                          <div
+                            className="text-sm font-medium"
+                            style={{
+                              opacity: s.done ? 0.55 : 0.9,
+                              textDecoration: s.done ? "line-through" : "none",
+                            }}
+                          >
+                            {s.text}
+                          </div>
+                        </div>
 
                         <div className="flex items-center gap-2">
-                          <span className="text-xs" style={{ opacity: 0.6 }}>≈ {stepPct}%</span>
+                          <span className="text-xs" style={{ opacity: 0.6 }}>
+                            ≈ {stepPct}%
+                          </span>
 
                           <IconButton
                             colors={ui}
-                            title={isEditing ? "Закончить редактирование шага" : "Редактировать шаг"}
+                            title={isEditing ? "Закончить редактирование" : "Редактировать"}
                             onClick={() => {
                               setEditingStepId(isEditing ? null : s.id);
                               setEditingGoal(false);
@@ -1376,28 +1533,44 @@ if (!user) {
                             <IconPencil />
                           </IconButton>
 
-                          <IconButton colors={ui} title="Удалить шаг" onClick={() => deleteStep(openGoal.id, s.id)}>
+                          <IconButton colors={ui} title="Удалить" onClick={() => deleteStep(openGoal.id, s.id)}>
                             <IconTrash />
                           </IconButton>
                         </div>
                       </div>
 
-                      {isEditing ? (
-                        <input
-                          className="mt-2 w-full rounded-2xl border px-4 py-3 text-sm outline-none"
-                          style={{ backgroundColor: ui.cardColor, color: ui.textColor, borderColor: "rgba(0,0,0,0.12)" }}
-                          value={s.text}
-                          onChange={(e) => updateStepText(openGoal.id, s.id, e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") setEditingStepId(null);
-                          }}
-                          onBlur={() => setEditingStepId(null)}
-                        />
-                      ) : (
-                        <div className="mt-2 text-sm font-medium" style={{ opacity: s.done ? 0.55 : 0.85, textDecoration: s.done ? "line-through" : "none" }}>
-                          {s.text}
+                      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                        <div className="sm:col-span-2">
+                          {isEditing ? (
+                            <input
+                              className="w-full rounded-2xl border px-4 py-3 text-sm outline-none"
+                              style={{ backgroundColor: ui.cardColor, color: ui.textColor, borderColor: "rgba(0,0,0,0.12)" }}
+                              value={s.text}
+                              onChange={(e) => updateStep(openGoal.id, s.id, { text: e.target.value })}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") setEditingStepId(null);
+                              }}
+                              onBlur={() => setEditingStepId(null)}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                          ) : (
+                            <div className="text-xs" style={{ opacity: 0.65 }}>
+                              {s.dueISO ? `Дедлайн: ${formatRu(s.dueISO)}` : "Дедлайн: не задан"}
+                            </div>
+                          )}
                         </div>
-                      )}
+
+                        <div>
+                          <input
+                            type="date"
+                            className="w-full cursor-pointer rounded-2xl border px-4 py-3 text-sm outline-none"
+                            style={{ backgroundColor: ui.cardColor, color: ui.textColor, borderColor: "rgba(0,0,0,0.12)" }}
+                            value={s.dueISO ?? ""}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => updateStep(openGoal.id, s.id, { dueISO: e.target.value })}
+                          />
+                        </div>
+                      </div>
                     </div>
                   );
                 })}
